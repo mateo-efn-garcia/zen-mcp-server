@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 import os
 import subprocess
-
+from functools import wraps
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, abort
+from markupsafe import escape
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
 # A05: Security Misconfiguration - Debug mode enabled
-app.config["DEBUG"] = True
-app.config["SECRET_KEY"] = "dev-secret-key"  # Hardcoded secret
+app.config["DEBUG"] = False
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "a-secure-default-key")  # Hardcoded secret
+
+
+def require_auth(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "Authorization" not in request.headers:
+            abort(401)
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 @app.route("/api/search", methods=["GET"])
@@ -21,9 +32,11 @@ def search():
     # A03: Injection - Command injection vulnerability
     if "file:" in query:
         filename = query.split("file:")[1]
-        # Direct command execution
-        result = subprocess.run(f"cat {filename}", shell=True, capture_output=True, text=True)
-        return jsonify({"result": result.stdout})
+        try:
+            with open(filename, "r") as f:
+                return jsonify({"result": f.read()})
+        except FileNotFoundError:
+            return jsonify({"error": "File not found"}), 404
 
     # A10: Server-Side Request Forgery (SSRF)
     if query.startswith("http"):
@@ -32,10 +45,11 @@ def search():
         return jsonify({"content": response.text})
 
     # Return search results without output encoding
-    return f"<h1>Search Results for: {query}</h1>"
+    return f"<h1>Search Results for: {escape(query)}</h1>"
 
 
 @app.route("/api/admin", methods=["GET"])
+@require_auth
 def admin_panel():
     """Admin panel with broken access control"""
     # A01: Broken Access Control - No authentication check
@@ -57,7 +71,7 @@ def upload_file():
     file = request.files.get("file")
     if file:
         # Saves any file type to server
-        filename = file.filename
+        filename = secure_filename(file.filename)
         file.save(os.path.join("/tmp", filename))
 
         # A03: Path traversal vulnerability
@@ -72,4 +86,4 @@ def upload_file():
 
 if __name__ == "__main__":
     # A05: Security Misconfiguration - Running on all interfaces
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=False)
